@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ equipo.nombre }} - CMMS</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: sans-serif; background:#111; color:#eee; padding: 40px; }
+        a.volver { color:#3498db; text-decoration:none; }
+        h1 { margin: 12px 0 4px; }
+
+        .wii-badge {
+            display: inline-block; background:#2ecc71; color:#111;
+            font-size: 0.7em; font-weight:700; padding: 3px 10px;
+            border-radius: 20px; vertical-align: middle; margin-left: 10px;
+        }
+
+        .contenedor { display: flex; align-items: flex-start; gap: 40px; margin-top: 25px; }
+        .icono-grande { width: 280px; height: 220px; flex-shrink:0; }
+        .icono-grande svg { width:100%; height:100%; }
+
+        #estado {
+            font-size: 1.15em; line-height: 1.9; padding: 22px;
+            border-radius: 10px; background:#222; min-width: 320px;
+        }
+        .alerta { border: 2px solid #e74c3c; }
+        .normal { border: 2px solid #2ecc71; }
+
+        button {
+            margin-top: 12px; padding: 10px 18px; color:#fff;
+            border:none; border-radius:6px; cursor:pointer; font-size:1em;
+            width: 100%;
+        }
+        .btn-reparar { background:#e74c3c; }
+        .btn-reparar:hover { background:#c0392b; }
+        .btn-vincular { background:#27ae60; }
+        .btn-vincular:hover { background:#2ecc71; color:#111; }
+        .btn-desvincular { background:#555; }
+        .btn-desvincular:hover { background:#777; }
+
+        @keyframes parpadeo-icono {
+            0%, 100% { filter: drop-shadow(0 0 0px #e74c3c); }
+            50%       { filter: drop-shadow(0 0 30px #e74c3c); }
+        }
+        .icono-grande.alerta { animation: parpadeo-icono 1s infinite; }
+
+        @keyframes sacudida-wii {
+            0%, 100% { transform: translateX(0) rotate(0deg); }
+            15% { transform: translateX(-8px) rotate(-2deg); }
+            30% { transform: translateX(7px) rotate(2deg); }
+            45% { transform: translateX(-6px) rotate(-1.5deg); }
+            60% { transform: translateX(5px) rotate(1.5deg); }
+            75% { transform: translateX(-3px) rotate(-1deg); }
+        }
+        .icono-grande.sacudida { animation: sacudida-wii 420ms ease-in-out; }
+
+        @keyframes parpadeo-texto {
+            0%, 100% { opacity: 1; }
+            50%       { opacity: 0.4; }
+        }
+        .estado-alerta-txt { animation: parpadeo-texto 1s infinite; color: #e74c3c; font-weight: bold; }
+
+        .info-wii {
+            margin-top: 10px; font-size: 0.8em; color: #888;
+            border-top: 1px solid #333; padding-top: 10px;
+        }
+
+        .falla-badge {
+            display: inline-block; background:#e74c3c; color:#fff;
+            font-size: 0.75em; font-weight:700; padding: 2px 8px;
+            border-radius: 4px; margin-left: 6px;
+        }
+    </style>
+</head>
+<body>
+    <a class="volver" href="{% url 'lista-equipos' %}">← Volver a la lista</a>
+    <h1>
+        {{ equipo.nombre }}
+        <span class="wii-badge" id="wii-badge" style="display:none">🎮 Wiimote activo</span>
+    </h1>
+    <p style="color:#999; margin:4px 0 0;">Ubicación: {{ equipo.ubicacion }}</p>
+
+    <div class="contenedor">
+        <div class="icono-grande" id="icono-maquina">{{ equipo.icono_svg|safe }}</div>
+        <div id="estado" class="normal">Cargando...</div>
+    </div>
+
+    <script>
+        const EQUIPO_ID = {{ equipo.id }};
+        let wiimoteEsEsteEquipo = false;
+        let lastData  = null;
+        let ultimaLecturaTs = null;
+        let hayFalla  = false;   // estado de falla real (de /api/equipos/ID/estado/)
+        let audioCtx  = null;
+
+        // ── Web Audio: inicializar al primer clic del usuario ─────────────
+        // Los navegadores bloquean audio sin interacción previa.
+        function getAudioCtx() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            return audioCtx;
+        }
+
+        document.addEventListener('click', () => getAudioCtx(), { once: true });
+
+        function tocar(frecuencia, inicio, duracion, tipo='sine', volumen=0.4) {
+            try {
+                const ctx = getAudioCtx();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.type = tipo;
+                osc.frequency.setValueAtTime(frecuencia, ctx.currentTime + inicio);
+                gain.gain.setValueAtTime(volumen, ctx.currentTime + inicio);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + inicio + duracion);
+                osc.start(ctx.currentTime + inicio);
+                osc.stop(ctx.currentTime + inicio + duracion + 0.05);
+            } catch(e) {}
+        }
+
+        function sonidoFalla() {
+            // Alarma: tres tonos descendentes graves
+            tocar(400, 0.0,  0.15, 'sawtooth', 0.5);
+            tocar(300, 0.18, 0.15, 'sawtooth', 0.5);
+            tocar(200, 0.36, 0.25, 'sawtooth', 0.5);
+        }
+
+        function sonidoReparado() {
+            // Melodía ascendente: DO-MI-SOL-DO
+            tocar(523,  0.0,  0.1, 'sine', 0.4);
+            tocar(659,  0.12, 0.1, 'sine', 0.4);
+            tocar(784,  0.24, 0.1, 'sine', 0.4);
+            tocar(1047, 0.36, 0.3, 'sine', 0.5);
+        }
+
+        function sonidoSinFalla() {
+            // Bip plano
+            tocar(440, 0.0, 0.2, 'sine', 0.3);
+        }
+
+        // ── Sesión Wiimote ────────────────────────────────────────────────
+        async function cargarSesionWiimote() {
+            try {
+                const res = await fetch('/api/wiimote/sesion/');
+                const data = await res.json();
+                wiimoteEsEsteEquipo = data.activa && data.equipo_id === EQUIPO_ID;
+                document.getElementById('wii-badge').style.display =
+                    wiimoteEsEsteEquipo ? 'inline-block' : 'none';
+            } catch(e) {}
+        }
+
+        async function vincularWiimote() {
+            getAudioCtx(); // desbloquear audio en este clic
+            const res = await fetch('/api/wiimote/sesion/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ equipo_id: EQUIPO_ID })
+            });
+            if (res.ok) {
+                wiimoteEsEsteEquipo = true;
+                document.getElementById('wii-badge').style.display = 'inline-block';
+                renderUI();
+            }
+        }
+
+        async function desvincularWiimote() {
+            await fetch('/api/wiimote/sesion/', { method: 'DELETE' });
+            wiimoteEsEsteEquipo = false;
+            document.getElementById('wii-badge').style.display = 'none';
+            renderUI();
+        }
+
+        function getCookie(name) {
+            const value = `; ${document.cookie}`;
+            const parts = value.split(`; ${name}=`);
+            if (parts.length === 2) return parts.pop().split(';').shift();
+        }
+
+        async function repararManual() {
+            getAudioCtx();
+            const csrf = getCookie('csrftoken');
+            await fetch(`/equipos/${EQUIPO_ID}/reparar/`, {
+                method: 'POST',
+                headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: ''
+            });
+            sonidoReparado();
+            await actualizarEstado();
+        }
+
+        // ── Estado real de falla ──────────────────────────────────────────
+        // Este endpoint devuelve si hay una Falla no resuelta para el equipo,
+        // independientemente de los valores de la última lectura.
+        async function actualizarEstado() {
+            try {
+                const res = await fetch(`/api/equipos/${EQUIPO_ID}/estado/`);
+                const data = await res.json();
+
+                const fallaAntes = hayFalla;
+                hayFalla = data.hay_falla;
+
+                // Sonido al cambiar de estado
+                if (!fallaAntes && hayFalla) {
+                    sonidoFalla();
+                } else if (fallaAntes && !hayFalla) {
+                    sonidoReparado();
+                }
+
+                renderUI(data);
+            } catch(e) {}
+        }
+
+        // Última lectura (solo para mostrar valores del sensor)
+        async function actualizarLectura() {
+            try {
+                const res = await fetch(`/api/equipos/${EQUIPO_ID}/ultima/`);
+                const data = await res.json();
+                const lecturaNueva = data.timestamp && data.timestamp !== ultimaLecturaTs;
+                lastData = data;
+                if (lecturaNueva) {
+                    ultimaLecturaTs = data.timestamp;
+                    sacudirIcono(data.movimiento || 0, data.golpe);
+                }
+            } catch(e) {}
+        }
+
+        function sacudirIcono(movimiento, golpe) {
+            const icono = document.getElementById('icono-maquina');
+            if (!icono || (!golpe && movimiento < 0.18)) return;
+            icono.classList.remove('sacudida');
+            void icono.offsetWidth;
+            icono.classList.add('sacudida');
+        }
+
+        // ── Render del panel ──────────────────────────────────────────────
+        function renderUI(estadoData) {
+            const div   = document.getElementById('estado');
+            const icono = document.getElementById('icono-maquina');
+
+            if (!lastData || lastData.sin_datos) {
+                div.className = 'normal';
+                icono.classList.remove('alerta');
+                div.innerHTML = `
+                    Sin lecturas todavía.<br>
+                    <small style="color:#666">Conecta el Wiimote y corre el script.</small>
+                    <br><br>
+                    ${botonesWiimote()}
+                `;
+                return;
+            }
+
+            div.className = hayFalla ? 'alerta' : 'normal';
+            icono.classList.toggle('alerta', hayFalla);
+
+            const falla = estadoData && estadoData.falla;
+            const severidad = falla ? falla.severidad : null;
+            const colorSev = { alta: '#e74c3c', media: '#f39c12', baja: '#f1c40f' };
+
+            div.innerHTML = `
+                Estado: ${hayFalla
+                    ? `<span class="estado-alerta-txt">🔴 FALLA DETECTADA</span>
+                       ${severidad ? `<span class="falla-badge" style="background:${colorSev[severidad]}">${severidad.toUpperCase()}</span>` : ''}`
+                    : '🟢 Operando'}
+                <br>
+                Vibración: <b>${fmt(lastData.vibracion)} g</b><br>
+                Inclinación: <b>${fmt(lastData.inclinacion)}°</b><br>
+                Magnitud: <b>${fmt(lastData.magnitud)} g</b><br>
+                Movimiento: <b>${fmt(lastData.movimiento)} Δg</b><br>
+                Temperatura: ${lastData.temperatura ?? '--'} °C<br>
+                ${falla ? `<small style="color:#e74c3c">⚠ ${falla.descripcion}</small><br>` : ''}
+                <small style="color:#666">Última lectura: ${lastData.timestamp ? new Date(lastData.timestamp).toLocaleTimeString() : '--'}</small>
+
+                <div class="info-wii">
+                ${botonesWiimote()}
+                </div>
+
+                ${hayFalla
+                    ? `<button class="btn-reparar" onclick="repararManual()">🔧 Marcar como reparada</button>`
+                    : ''
+                }
+            `;
+        }
+
+        function fmt(valor) {
+            return Number.isFinite(Number(valor)) ? Number(valor).toFixed(2) : '--';
+        }
+
+        function botonesWiimote() {
+            return wiimoteEsEsteEquipo
+                ? `🎮 Wiimote enviando datos a este equipo<br>
+                   <small>Botón A del Wiimote = reparar falla activa</small>
+                   <button class="btn-desvincular" onclick="desvincularWiimote()" style="margin-top:8px;">Desvincular Wiimote</button>`
+                : `<button class="btn-vincular" onclick="vincularWiimote()">🎮 Vincular Wiimote a esta máquina</button>`;
+        }
+
+        // ── Polling ───────────────────────────────────────────────────────
+        async function tick() {
+            await actualizarLectura();
+            await actualizarEstado();
+        }
+
+        cargarSesionWiimote();
+        tick();
+        setInterval(tick, 500);
+        setInterval(cargarSesionWiimote, 5000);
+    </script>
+</body>
+</html>

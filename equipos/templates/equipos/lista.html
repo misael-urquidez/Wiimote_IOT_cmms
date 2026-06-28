@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Máquinas - CMMS</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: sans-serif; background:#111; color:#eee; padding: 40px; }
+        h1 { margin-bottom: 8px; }
+
+        /* Banner Wiimote */
+        #banner-wiimote {
+            display: flex; align-items: center; gap: 14px;
+            background: #1a1a2e; border: 2px solid #555; border-radius: 10px;
+            padding: 14px 20px; margin-bottom: 28px; max-width: 720px;
+            transition: border-color .3s;
+        }
+        #banner-wiimote.vinculado { border-color: #2ecc71; }
+        #banner-wiimote.libre     { border-color: #555; }
+        .wii-icon { font-size: 2em; }
+        #banner-texto { flex: 1; }
+        #banner-titulo { font-weight: 700; font-size: 1em; }
+        #banner-sub    { font-size: 0.82em; color: #999; margin-top: 2px; }
+        #btn-desvincular {
+            padding: 7px 14px; background: #c0392b; color: #fff;
+            border: none; border-radius: 6px; cursor: pointer; font-size: 0.85em;
+            display: none;
+        }
+        #btn-desvincular:hover { background: #e74c3c; }
+
+        /* Lista de equipos */
+        .lista { display:flex; flex-direction:column; gap:16px; max-width: 720px; }
+        .fila {
+            display:flex; align-items:center; gap:24px;
+            background:#1c1c1c; border:2px solid #333; border-radius:10px;
+            padding:14px 22px; text-decoration:none; color:#eee;
+            transition: border-color .2s;
+        }
+        .fila:hover { border-color:#3498db; }
+        .icono-svg { width:80px; height:64px; flex-shrink:0; }
+        .icono-svg svg { width:100%; height:100%; }
+        .nombre { font-size: 1.1em; font-weight:600; }
+        .sub    { font-size: 0.85em; color:#999; }
+        .badge-wii {
+            margin-left: auto; background: #2ecc71; color: #111;
+            font-size: 0.75em; font-weight: 700; padding: 4px 10px;
+            border-radius: 20px; white-space: nowrap; display: none;
+        }
+
+        @keyframes parpadeo {
+            0%, 100% { box-shadow: 0 0 0px rgba(231,76,60,0); border-color: #e74c3c; }
+            50%      { box-shadow: 0 0 22px rgba(231,76,60,0.9); border-color: #ff6b5b; }
+        }
+        .fila.alerta { animation: parpadeo 1s infinite; }
+        .fila.alerta .icono-svg { filter: drop-shadow(0 0 10px #e74c3c); }
+        .fila.wii-activo { border-color: #2ecc71!important; animation: none; }
+        .fila.wii-activo.alerta { animation: parpadeo 1s infinite; }
+    </style>
+</head>
+<body>
+    <h1>Selecciona una máquina</h1>
+
+    <!-- Banner estado Wiimote -->
+    <div id="banner-wiimote" class="libre">
+        <div class="wii-icon">🎮</div>
+        <div id="banner-texto">
+            <div id="banner-titulo">Wiimote desconectado</div>
+            <div id="banner-sub">Selecciona una máquina para vincular el Wiimote como sensor IoT</div>
+        </div>
+        <button id="btn-desvincular" onclick="desvincular()">✕ Desvincular</button>
+    </div>
+
+    <div class="lista">
+        {% for equipo in equipos %}
+        <a href="{% url 'detalle-equipo' equipo.id %}"
+           class="fila"
+           data-equipo-id="{{ equipo.id }}"
+           data-equipo-nombre="{{ equipo.nombre }}"
+           data-umbral-vib="{{ equipo.umbral_vibracion }}"
+           data-umbral-inc="{{ equipo.umbral_inclinacion }}">
+            <div class="icono-svg">{{ equipo.icono_svg|safe }}</div>
+            <div>
+                <div class="nombre">{{ equipo.nombre }}</div>
+                <div class="sub">{{ equipo.ubicacion }}</div>
+            </div>
+            <span class="badge-wii" id="badge-{{ equipo.id }}">🎮 Wiimote</span>
+        </a>
+        {% endfor %}
+    </div>
+
+    <script>
+        let sesionActual = null;
+
+        async function cargarSesion() {
+            try {
+                const res = await fetch('/api/wiimote/sesion/');
+                const data = await res.json();
+                actualizarBanner(data);
+            } catch(e) { console.error(e); }
+        }
+
+        function actualizarBanner(data) {
+            const banner = document.getElementById('banner-wiimote');
+            const titulo = document.getElementById('banner-titulo');
+            const sub    = document.getElementById('banner-sub');
+            const btnDes = document.getElementById('btn-desvincular');
+
+            // Limpiar badges anteriores
+            document.querySelectorAll('.badge-wii').forEach(b => b.style.display = 'none');
+            document.querySelectorAll('.fila').forEach(f => f.classList.remove('wii-activo'));
+
+            if (data.activa) {
+                sesionActual = data;
+                banner.className = 'vinculado';
+                titulo.textContent = `🎮 Wiimote vinculado → ${data.equipo_nombre}`;
+                sub.textContent = 'Enviando lecturas en tiempo real. Botón A = reparar falla activa.';
+                btnDes.style.display = 'block';
+
+                const badge = document.getElementById('badge-' + data.equipo_id);
+                if (badge) { badge.style.display = 'inline-block'; }
+                const fila = document.querySelector(`[data-equipo-id="${data.equipo_id}"]`);
+                if (fila) { fila.classList.add('wii-activo'); }
+            } else {
+                sesionActual = null;
+                banner.className = 'libre';
+                titulo.textContent = 'Wiimote desconectado';
+                sub.textContent = 'Selecciona una máquina para vincular el Wiimote como sensor IoT';
+                btnDes.style.display = 'none';
+            }
+        }
+
+        async function desvincular() {
+            await fetch('/api/wiimote/sesion/', { method: 'DELETE' });
+            actualizarBanner({ activa: false });
+        }
+
+        // Interceptar clicks en las filas para vincular si no hay sesión activa
+        document.querySelectorAll('.fila').forEach(fila => {
+            fila.addEventListener('click', async (e) => {
+                // Si ya tiene el Wiimote vinculado a esta máquina, navegar normal
+                if (sesionActual && sesionActual.equipo_id == fila.dataset.equipoId) return;
+
+                // Si no hay sesión, preguntar si quiere vincular
+                if (!sesionActual) {
+                    e.preventDefault();
+                    const nombre = fila.dataset.equipoNombre;
+                    const confirmar = confirm(`¿Vincular el Wiimote a "${nombre}"?\n\nEsto iniciará el envío de datos del sensor.`);
+                    if (!confirmar) {
+                        // Navegar sin vincular
+                        window.location.href = fila.href;
+                        return;
+                    }
+                    const res = await fetch('/api/wiimote/sesion/', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ equipo_id: parseInt(fila.dataset.equipoId) })
+                    });
+                    const data = await res.json();
+                    actualizarBanner(data);
+                    // Navegar a la máquina después de vincular
+                    window.location.href = fila.href;
+                }
+            });
+        });
+
+        // Polling: alertas + estado sesión cada 3 segundos
+        async function revisarEstados() {
+            const filas = document.querySelectorAll('.fila');
+            for (const fila of filas) {
+                const id = fila.dataset.equipoId;
+                try {
+                    const res = await fetch(`/api/equipos/${id}/estado/`);
+                    const data = await res.json();
+                    fila.classList.toggle('alerta', data.hay_falla);
+                } catch (e) { console.error(e); }
+            }
+        }
+
+        cargarSesion();
+        setInterval(revisarEstados, 3000);
+        setInterval(cargarSesion, 5000);
+    </script>
+</body>
+</html>
